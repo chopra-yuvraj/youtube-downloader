@@ -56,7 +56,7 @@ def _build_ydl_opts(
         # Prevent downloading excessively large files
         "max_filesize": 2 * 1024 * 1024 * 1024,  # 2 GB
         "extractor_args": {"youtube": ["player_client=ios,tv,web"]},
-        "remote_components": "ejs:github",
+        "remote_components": ["ejs:github"],
     }
 
     if COOKIE_FILE:
@@ -155,8 +155,8 @@ async def fetch_video_info(url: str) -> dict:
         "extractor_args": {"youtube": ["player_client=ios,tv,web"]},
     }
     
-    # Must use string value for yt_dlp option "remote_components"
-    ydl_opts["remote_components"] = "ejs:github"
+    # Must use list value for yt_dlp option "remote_components"
+    ydl_opts["remote_components"] = ["ejs:github"]
 
     if COOKIE_FILE:
         ydl_opts["cookiefile"] = str(COOKIE_FILE)
