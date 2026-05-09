@@ -29,12 +29,12 @@ def _strip_ansi(s: str) -> str:
     return _ANSI_RE.sub("", s).strip()
 
 
-# ── Quality → format string mapping ───────────────────────────────
-_QUALITY_MAP = {
-    "144p": "bestvideo[height<=144]+bestaudio/best[height<=144]/best",
-    "360p": "bestvideo[height<=360]+bestaudio/best[height<=360]/best",
-    "720p": "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
-    "1080p": "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+# ── Quality → preferred resolution mapping ────────────────────────
+_QUALITY_RES = {
+    "144p": 144,
+    "360p": 360,
+    "720p": 720,
+    "1080p": 1080,
 }
 
 
@@ -61,6 +61,7 @@ def _build_ydl_opts(
         opts["cookiefile"] = str(COOKIE_FILE)
 
     if format_type == "mp3":
+        # Use broad format string — never hard-fail
         opts["format"] = "bestaudio/best"
         opts["postprocessors"] = [
             {
@@ -70,7 +71,11 @@ def _build_ydl_opts(
             }
         ]
     else:
-        opts["format"] = _QUALITY_MAP.get(quality, _QUALITY_MAP["1080p"])
+        # Use "bestvideo+bestaudio/best" which ALWAYS succeeds, then use
+        # format_sort to prefer the requested resolution without hard-failing.
+        res = _QUALITY_RES.get(quality, 1080)
+        opts["format"] = "bestvideo+bestaudio/best"
+        opts["format_sort"] = [f"res:{res}", "ext:mp4:m4a"]
         opts["merge_output_format"] = "mp4"
 
     return opts
