@@ -110,7 +110,12 @@ async def health_check():
 @app.get("/api/debug")
 async def debug_ytdlp(url: str):
     """Run yt-dlp --list-formats to see exactly what Render sees."""
-    cmd = ["yt-dlp", "--list-formats"]
+    cmd = [
+        "yt-dlp",
+        "--list-formats",
+        "--remote-components", "ejs:github",
+        "--extractor-args", "youtube:player_client=android,web"
+    ]
     if COOKIE_FILE and COOKIE_FILE.exists():
         cmd.extend(["--cookies", str(COOKIE_FILE)])
     cmd.append(url)
