@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+yt-dlp
+pydantic
+websockets
+python-multipart
+cors
+aiofiles
