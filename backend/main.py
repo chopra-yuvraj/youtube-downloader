@@ -10,6 +10,7 @@ Architecture:
 import asyncio
 import logging
 import time
+import subprocess
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
@@ -104,6 +105,28 @@ class InfoRequest(BaseModel):
 async def health_check():
     """Health check endpoint for monitoring and load balancers."""
     return {"status": "ok"}
+
+
+@app.get("/api/debug")
+async def debug_ytdlp(url: str):
+    """Run yt-dlp --list-formats to see exactly what Render sees."""
+    cmd = ["yt-dlp", "--list-formats"]
+    if COOKIE_FILE and COOKIE_FILE.exists():
+        cmd.extend(["--cookies", str(COOKIE_FILE)])
+    cmd.append(url)
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        cookie_size = COOKIE_FILE.stat().st_size if COOKIE_FILE and COOKIE_FILE.exists() else 0
+        return {
+            "cookie_file": str(COOKIE_FILE),
+            "cookie_size_bytes": cookie_size,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "exit_code": result.returncode
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.post("/api/info")
