@@ -114,7 +114,7 @@ async def debug_ytdlp(url: str):
         "yt-dlp",
         "--list-formats",
         "--remote-components", "ejs:github",
-        "--extractor-args", "youtube:player_client=android,web"
+        "--extractor-args", "youtube:player_client=ios,tv,web"
     ]
     if COOKIE_FILE and COOKIE_FILE.exists():
         cmd.extend(["--cookies", str(COOKIE_FILE)])
