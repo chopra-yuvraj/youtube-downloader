@@ -58,7 +58,8 @@ export function useTheme() {
 export const YOUTUBE_URL_RE = /^(https?:\/\/)?(www\.)?(youtube\.com\/(watch\?v=|shorts\/)|youtu\.be\/).+$/;
 
 /** ── Backend URLs ───────────────────────────────────────────────
- *  Pulled from Vite env vars with localhost fallback for dev.
+ *  Pulled from Vite env vars with production Render backend as default.
+ *  For local dev, set VITE_BACKEND_URL=http://localhost:8000 in a .env file.
  */
-export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
-export const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/api/ws/download';
+export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://youtube-downloader-yt35.onrender.com';
+export const WS_URL = import.meta.env.VITE_WS_URL || 'wss://youtube-downloader-yt35.onrender.com/api/ws/download';

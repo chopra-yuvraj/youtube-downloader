@@ -6,8 +6,8 @@ RUN npm ci
 
 COPY . .
 
-ARG VITE_BACKEND_URL=http://localhost:8000
-ARG VITE_WS_URL=ws://localhost:8000/api/ws/download
+ARG VITE_BACKEND_URL=https://youtube-downloader-yt35.onrender.com
+ARG VITE_WS_URL=wss://youtube-downloader-yt35.onrender.com/api/ws/download
 ENV VITE_BACKEND_URL=$VITE_BACKEND_URL
 ENV VITE_WS_URL=$VITE_WS_URL
 

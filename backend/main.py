@@ -24,6 +24,7 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from config import (
     ALLOWED_ORIGINS, DOWNLOAD_DIR, FILE_TTL_SECONDS, CLEANUP_INTERVAL, RATE_LIMIT,
+    COOKIE_FILE,
 )
 from validators import validate_youtube_url, sanitize_filename
 from downloader import fetch_video_info, start_download
@@ -60,6 +61,8 @@ async def _cleanup_loop():
 async def lifespan(app: FastAPI):
     task = asyncio.create_task(_cleanup_loop())
     logger.info("AnyDL backend started — cleanup task scheduled")
+    logger.info("CORS allowed origins: %s", ALLOWED_ORIGINS)
+    logger.info("Cookie file: %s", COOKIE_FILE or "NOT FOUND (unauthenticated mode)")
     yield
     task.cancel()
     logger.info("AnyDL backend shutting down")

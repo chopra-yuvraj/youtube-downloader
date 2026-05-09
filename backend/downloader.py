@@ -13,7 +13,7 @@ from typing import Callable
 
 import yt_dlp
 
-from config import DOWNLOAD_DIR, BASE_DIR
+from config import DOWNLOAD_DIR, BASE_DIR, COOKIE_FILE
 
 logger = logging.getLogger("anydl.downloader")
 
@@ -57,9 +57,8 @@ def _build_ydl_opts(
         "max_filesize": 2 * 1024 * 1024 * 1024,  # 2 GB
     }
 
-    cookie_file = BASE_DIR / "cookies.txt"
-    if cookie_file.exists():
-        opts["cookiefile"] = str(cookie_file)
+    if COOKIE_FILE:
+        opts["cookiefile"] = str(COOKIE_FILE)
 
     if format_type == "mp3":
         opts["format"] = "bestaudio/best"
@@ -143,9 +142,8 @@ async def fetch_video_info(url: str) -> dict:
     """
     ydl_opts = {"quiet": True, "skip_download": True, "no_warnings": True}
     
-    cookie_file = BASE_DIR / "cookies.txt"
-    if cookie_file.exists():
-        ydl_opts["cookiefile"] = str(cookie_file)
+    if COOKIE_FILE:
+        ydl_opts["cookiefile"] = str(COOKIE_FILE)
 
     def _extract():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

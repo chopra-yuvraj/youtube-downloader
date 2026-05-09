@@ -4,8 +4,8 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - ALLOWED_ORIGINS=http://localhost:5173,http://localhost:4173
-      - FILE_TTL_SECONDS=3600
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-https://somnath-ji.vercel.app,http://localhost:5173,http://localhost:4173}
+      - FILE_TTL_SECONDS=${FILE_TTL_SECONDS:-3600}
     volumes:
       - downloads:/app/downloads
     restart: unless-stopped
@@ -14,8 +14,8 @@ services:
     build:
       context: ./frontend
       args:
-        VITE_BACKEND_URL: http://localhost:8000
-        VITE_WS_URL: ws://localhost:8000/api/ws/download
+        VITE_BACKEND_URL: ${VITE_BACKEND_URL:-https://youtube-downloader-yt35.onrender.com}
+        VITE_WS_URL: ${VITE_WS_URL:-wss://youtube-downloader-yt35.onrender.com/api/ws/download}
     ports:
       - "5173:80"
     depends_on:
