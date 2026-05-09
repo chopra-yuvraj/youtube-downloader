@@ -61,8 +61,8 @@ def _build_ydl_opts(
         opts["cookiefile"] = str(COOKIE_FILE)
 
     if format_type == "mp3":
-        # Use broad format string — never hard-fail
-        opts["format"] = "bestaudio/best"
+        # ba* = best audio (including combined formats); /b = ultimate fallback
+        opts["format"] = "ba*/b"
         opts["postprocessors"] = [
             {
                 "key": "FFmpegExtractAudio",
@@ -71,10 +71,10 @@ def _build_ydl_opts(
             }
         ]
     else:
-        # Use "bestvideo+bestaudio/best" which ALWAYS succeeds, then use
-        # format_sort to prefer the requested resolution without hard-failing.
+        # bv* = best video INCLUDING combined formats (never fails unlike "bestvideo")
+        # ba  = best audio-only for merging; /b = ultimate fallback
         res = _QUALITY_RES.get(quality, 1080)
-        opts["format"] = "bestvideo+bestaudio/best"
+        opts["format"] = "bv*+ba/b"
         opts["format_sort"] = [f"res:{res}", "ext:mp4:m4a"]
         opts["merge_output_format"] = "mp4"
 
