@@ -10,9 +10,9 @@ HOST: str = os.getenv("HOST", "0.0.0.0")
 PORT: int = int(os.getenv("PORT", "8000"))
 
 # ── CORS ───────────────────────────────────────────────────────────
-# Comma-separated origins, e.g. "http://localhost:5173,https://anydl.app"
+# Comma-separated origins, or "*" for all
 ALLOWED_ORIGINS: list[str] = os.getenv(
-    "ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:4173"
+    "ALLOWED_ORIGINS", "*"
 ).split(",")
 
 # ── Downloads ──────────────────────────────────────────────────────
