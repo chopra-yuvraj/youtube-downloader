@@ -229,11 +229,14 @@ async def websocket_download(websocket: WebSocket):
             pass
 
 
+import re
+
 @app.get("/api/files/{filename}")
-async def serve_file(filename: str):
+async def serve_file(filename: str, title: str = None):
     """
     Serve a completed download file.
     Sanitizes the filename to prevent path traversal attacks.
+    If 'title' is provided, it uses it for the download filename.
     """
     try:
         safe_name = sanitize_filename(filename)
@@ -249,9 +252,17 @@ async def serve_file(filename: str):
     if not file_path.resolve().is_relative_to(DOWNLOAD_DIR.resolve()):
         raise HTTPException(status_code=403, detail="Access denied")
 
+    download_name = safe_name
+    if title:
+        # Sanitize the title to be a valid, safe filename
+        ext = file_path.suffix
+        clean_title = re.sub(r'[<>:"/\\|?*]', '', title).strip()
+        if clean_title:
+            download_name = f"{clean_title}{ext}"
+
     return FileResponse(
         path=str(file_path),
-        filename=safe_name,
+        filename=download_name,
         media_type="application/octet-stream",
     )
 

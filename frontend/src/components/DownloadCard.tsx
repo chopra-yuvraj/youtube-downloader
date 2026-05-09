@@ -72,7 +72,7 @@ const DownloadCard = memo(function DownloadCard({ job, onCancel, onRemove }: Dow
             </div>
             <div className="flex gap-2">
               <a
-                href={job.downloadUrl}
+                href={`${job.downloadUrl}?title=${encodeURIComponent(job.title)}`}
                 download
                 className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-primary text-primary-foreground text-sm font-semibold rounded-lg hover:bg-primary/90 transition-all hover:scale-105 active:scale-95 shadow-sm shadow-primary/20"
               >
