@@ -1,16 +1,29 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import App from './App.tsx'
+import App from './App'
 import './index.css'
-import { registerSW } from 'virtual:pwa-register'
 
-const updateSW = registerSW({
-  onNeedRefresh() {
-    if (confirm('New content available. Reload?')) {
-      updateSW(true)
+// Register the service worker for PWA support
+async function registerServiceWorker() {
+  if ('serviceWorker' in navigator) {
+    try {
+      const { registerSW } = await import('virtual:pwa-register')
+      registerSW({
+        onNeedRefresh() {
+          // New version available — could show a toast, but auto-update is fine
+        },
+        onOfflineReady() {
+          console.log('AnyDL is ready to work offline')
+        },
+      })
+    } catch (e) {
+      // PWA registration may fail in dev — that's fine
+      console.warn('PWA registration skipped:', e)
     }
-  },
-})
+  }
+}
+
+registerServiceWorker()
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

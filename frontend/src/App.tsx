@@ -1,99 +1,80 @@
-import React, { useState, useEffect, useRef, DragEvent } from 'react';
-import { 
-  DownloadCloud, Link as LinkIcon, Settings2, Moon, Sun, 
-  X, CheckCircle, AlertCircle, Loader2, PlayCircle, Monitor, 
-  Trash2, XCircle
+import { useState, useRef, useCallback } from 'react';
+import type { DragEvent } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import {
+  Link as LinkIcon, AlertCircle, Clipboard,
+  DownloadCloud, Sparkles, Inbox,
 } from 'lucide-react';
-import { cn } from './lib/utils';
 import axios from 'axios';
 
-const BACKEND_URL = 'http://localhost:8000';
-const WS_URL = 'ws://localhost:8000/api/ws/download';
+import { cn } from './lib/utils';
+import { useTheme, useDebounce, BACKEND_URL, WS_URL, YOUTUBE_URL_RE } from './lib/hooks';
+import type { VideoInfo, DownloadJob, FormatType, QualityOption } from './lib/types';
 
-interface VideoInfo {
-  title: string;
-  thumbnail?: string;
-  duration: number;
-}
-
-interface DownloadJob {
-  id: string;
-  url: string;
-  format: 'mp3' | 'mp4';
-  quality: string;
-  status: 'pending' | 'downloading' | 'completed' | 'error' | 'cancelled';
-  progress: number;
-  speed: string;
-  eta: string;
-  title: string;
-  downloadUrl?: string;
-  errorMessage?: string;
-}
+import Navbar from './components/Navbar';
+import Footer from './components/Footer';
+import VideoPreview, { VideoPreviewSkeleton } from './components/VideoPreview';
+import DownloadCard from './components/DownloadCard';
 
 export default function App() {
-  const [theme, setTheme] = useState<'light' | 'dark'>('dark');
+  const { theme, toggle: toggleTheme } = useTheme();
+
+  // ── URL input state ──────────────────────────────────────────
   const [url, setUrl] = useState('');
   const [isDragging, setIsDragging] = useState(false);
-  const [format, setFormat] = useState<'mp3' | 'mp4'>('mp4');
-  const [quality, setQuality] = useState('1080p');
-  
+  const [format, setFormat] = useState<FormatType>('mp4');
+  const [quality, setQuality] = useState<QualityOption>('1080p');
+
+  // ── Video info state ─────────────────────────────────────────
   const [videoInfo, setVideoInfo] = useState<VideoInfo | null>(null);
   const [isLoadingInfo, setIsLoadingInfo] = useState(false);
   const [infoError, setInfoError] = useState('');
 
+  // ── Downloads state ──────────────────────────────────────────
   const [jobs, setJobs] = useState<DownloadJob[]>([]);
-  const wsRefs = useRef<{[key: string]: WebSocket}>({});
+  const wsRefs = useRef<Record<string, WebSocket>>({});
 
-  useEffect(() => {
-    document.documentElement.classList.toggle('dark', theme === 'dark');
-  }, [theme]);
-
-  const fetchVideoInfo = async (videoUrl: string) => {
-    if (!videoUrl) return;
+  // ── Debounced info fetch (700ms delay) ───────────────────────
+  const fetchVideoInfo = useCallback(async (videoUrl: string) => {
+    if (!videoUrl || !YOUTUBE_URL_RE.test(videoUrl)) return;
     setIsLoadingInfo(true);
     setInfoError('');
     try {
       const res = await axios.post(`${BACKEND_URL}/api/info`, { url: videoUrl });
       setVideoInfo(res.data);
     } catch (err: any) {
-      setInfoError(err.response?.data?.detail || 'Failed to fetch video info');
+      const msg = err.response?.data?.detail || 'Could not fetch video info';
+      setInfoError(msg);
       setVideoInfo(null);
     } finally {
       setIsLoadingInfo(false);
     }
-  };
+  }, []);
 
+  const debouncedFetch = useDebounce(fetchVideoInfo, 700);
+
+  // ── Handlers ─────────────────────────────────────────────────
   const handleUrlChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newUrl = e.target.value;
     setUrl(newUrl);
-    
-    if (newUrl.match(/^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.?be)\/.+$/)) {
-      fetchVideoInfo(newUrl);
+    setInfoError('');
+
+    if (YOUTUBE_URL_RE.test(newUrl)) {
+      debouncedFetch(newUrl);
     } else {
       setVideoInfo(null);
-      setInfoError('');
     }
   };
 
-  const handleDragOver = (e: DragEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-  };
-
-  const handleDragLeave = (e: DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-  };
-
+  const handleDragOver = (e: DragEvent) => { e.preventDefault(); setIsDragging(true); };
+  const handleDragLeave = (e: DragEvent) => { e.preventDefault(); setIsDragging(false); };
   const handleDrop = (e: DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
     const text = e.dataTransfer.getData('text');
     if (text) {
       setUrl(text);
-      if (text.match(/^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.?be)\/.+$/)) {
-        fetchVideoInfo(text);
-      }
+      if (YOUTUBE_URL_RE.test(text)) fetchVideoInfo(text);
     }
   };
 
@@ -101,18 +82,17 @@ export default function App() {
     try {
       const text = await navigator.clipboard.readText();
       setUrl(text);
-      if (text.match(/^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.?be)\/.+$/)) {
-        fetchVideoInfo(text);
-      }
-    } catch (err) {
-      console.error('Failed to read clipboard', err);
+      if (YOUTUBE_URL_RE.test(text)) fetchVideoInfo(text);
+    } catch {
+      // Clipboard API may be blocked; fail silently
     }
   };
 
+  // ── Download start ───────────────────────────────────────────
   const startDownload = () => {
     if (!url) return;
 
-    const jobId = Math.random().toString(36).substring(7);
+    const jobId = crypto.randomUUID();
     const newJob: DownloadJob = {
       id: jobId,
       url,
@@ -120,9 +100,9 @@ export default function App() {
       quality,
       status: 'pending',
       progress: 0,
-      speed: '0KiB/s',
-      eta: 'Unknown',
-      title: videoInfo?.title || 'Unknown Video',
+      speed: '—',
+      eta: '—',
+      title: videoInfo?.title || 'Fetching title...',
     };
 
     setJobs(prev => [newJob, ...prev]);
@@ -136,295 +116,278 @@ export default function App() {
 
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
-      
       setJobs(prev => prev.map(job => {
-        if (job.id === jobId) {
-          if (data.status === 'downloading') {
+        if (job.id !== jobId) return job;
+
+        switch (data.status) {
+          case 'downloading':
             return { ...job, status: 'downloading', progress: data.progress, speed: data.speed, eta: data.eta };
-          } else if (data.status === 'completed') {
+          case 'completed':
             return { ...job, status: 'completed', progress: 100, downloadUrl: `${BACKEND_URL}${data.download_url}`, title: data.title || job.title };
-          } else if (data.status === 'error') {
+          case 'error':
             return { ...job, status: 'error', errorMessage: data.message };
-          } else if (data.status === 'cancelled') {
+          case 'cancelled':
             return { ...job, status: 'cancelled' };
-          }
+          default:
+            return job;
         }
-        return job;
       }));
+    };
+
+    ws.onerror = () => {
+      setJobs(prev => prev.map(j =>
+        j.id === jobId ? { ...j, status: 'error', errorMessage: 'Connection to server failed' } : j
+      ));
     };
 
     ws.onclose = () => {
       delete wsRefs.current[jobId];
     };
-    
+
+    // Reset input
     setUrl('');
     setVideoInfo(null);
+    setInfoError('');
   };
 
-  const cancelJob = (jobId: string) => {
-    if (wsRefs.current[jobId]) {
-      wsRefs.current[jobId].close();
-      delete wsRefs.current[jobId];
-    }
+  const cancelJob = useCallback((jobId: string) => {
+    const ws = wsRefs.current[jobId];
+    if (ws) { ws.close(); delete wsRefs.current[jobId]; }
     setJobs(prev => prev.map(j => j.id === jobId ? { ...j, status: 'cancelled' } : j));
-  };
+  }, []);
 
-  const removeJob = (jobId: string) => {
+  const removeJob = useCallback((jobId: string) => {
     setJobs(prev => prev.filter(j => j.id !== jobId));
-  };
+  }, []);
 
+  const activeCount = jobs.filter(j => j.status === 'downloading' || j.status === 'pending').length;
+
+  // ── Render ───────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-background text-foreground selection:bg-primary/30 flex flex-col">
-      <nav className="border-b border-border bg-card/50 backdrop-blur-xl sticky top-0 z-50">
-        <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="bg-primary/10 p-2 rounded-lg">
-              <DownloadCloud className="w-6 h-6 text-primary" />
-            </div>
-            <span className="font-bold text-xl tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-primary to-accent">
-              AnyDL
-            </span>
-          </div>
-          <button
-            onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
-            className="p-2 rounded-full hover:bg-muted transition-colors"
-          >
-            {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-          </button>
-        </div>
-      </nav>
+      <Navbar theme={theme} onToggleTheme={toggleTheme} />
 
-      <main className="flex-1 max-w-6xl mx-auto px-4 py-12 w-full grid grid-cols-1 lg:grid-cols-12 gap-8">
+      <main className="flex-1 max-w-6xl mx-auto px-4 sm:px-6 py-8 sm:py-12 w-full grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10">
+        {/* ── Left Column: Input ──────────────────────────────── */}
         <div className="lg:col-span-7 space-y-8">
-          <div className="space-y-4">
-            <h1 className="text-4xl sm:text-5xl font-black tracking-tighter">
-              Download Media <br />
-              <span className="text-primary">Instantly.</span>
-            </h1>
-            <p className="text-lg text-muted-foreground max-w-lg">
-              High-quality downloads from YouTube. Simply paste your link, choose your format, and let us handle the rest.
-            </p>
+          {/* Hero */}
+          <div className="space-y-3">
+            <motion.h1
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.5 }}
+              className="text-4xl sm:text-5xl font-black tracking-tight leading-[1.1]"
+            >
+              Download Media{' '}
+              <span className="text-gradient">Instantly.</span>
+            </motion.h1>
+            <motion.p
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.5, delay: 0.15 }}
+              className="text-base sm:text-lg text-muted-foreground max-w-lg"
+            >
+              Paste a YouTube link, pick your format, and download. 
+              Fast, private, and free.
+            </motion.p>
           </div>
 
-          <div
+          {/* Drop Zone */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.25 }}
             className={cn(
-              "border-2 border-dashed rounded-2xl p-8 transition-all duration-300 relative group overflow-hidden bg-card",
-              isDragging ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"
+              "border-2 border-dashed rounded-2xl p-6 sm:p-8 transition-all duration-300 relative group overflow-hidden bg-card",
+              isDragging ? "border-primary bg-primary/5 scale-[1.01]" : "border-border hover:border-primary/40"
             )}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
           >
-            <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
-            
-            <div className="relative flex flex-col items-center gap-6">
+            {/* Background gradient hover effect */}
+            <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
+
+            <div className="relative flex flex-col items-center gap-5">
+              {/* URL Input */}
               <div className="w-full relative">
-                <div className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground">
+                <div className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none">
                   <LinkIcon className="w-5 h-5" />
                 </div>
                 <input
-                  type="text"
+                  id="url-input"
+                  type="url"
                   placeholder="Paste YouTube link here..."
                   value={url}
                   onChange={handleUrlChange}
-                  className="w-full bg-background border border-border rounded-xl pl-12 pr-24 py-4 text-lg focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all placeholder:text-muted-foreground"
+                  className="w-full bg-background border border-border rounded-xl pl-12 pr-24 py-4 text-base sm:text-lg focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary/50 transition-all placeholder:text-muted-foreground"
+                  autoComplete="off"
+                  spellCheck={false}
                 />
                 <button
                   onClick={handlePaste}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 px-4 py-2 bg-muted hover:bg-muted/80 text-foreground rounded-lg font-medium transition-colors text-sm"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-2 bg-muted hover:bg-muted/80 text-foreground rounded-lg font-medium transition-all text-sm flex items-center gap-1.5 hover:scale-105 active:scale-95"
+                  aria-label="Paste URL from clipboard"
                 >
+                  <Clipboard className="w-3.5 h-3.5" />
                   Paste
                 </button>
               </div>
 
-              {isLoadingInfo && (
-                <div className="flex items-center gap-2 text-primary">
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  <span>Fetching info...</span>
-                </div>
-              )}
+              {/* Loading / Error / Preview */}
+              <AnimatePresence mode="wait">
+                {isLoadingInfo && (
+                  <motion.div key="loading" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                    <VideoPreviewSkeleton />
+                  </motion.div>
+                )}
 
-              {infoError && (
-                <div className="flex items-center gap-2 text-destructive bg-destructive/10 px-4 py-2 rounded-lg w-full">
-                  <AlertCircle className="w-5 h-5" />
-                  <span>{infoError}</span>
-                </div>
-              )}
+                {infoError && !isLoadingInfo && (
+                  <motion.div
+                    key="error"
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    className="flex items-center gap-2 text-destructive bg-destructive/10 px-4 py-3 rounded-xl w-full text-sm font-medium"
+                  >
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{infoError}</span>
+                  </motion.div>
+                )}
 
-              {videoInfo && (
-                <div className="flex gap-4 w-full bg-background p-4 rounded-xl border border-border animate-in fade-in slide-in-from-bottom-4">
-                  <div className="relative w-32 aspect-video rounded-lg overflow-hidden shrink-0 bg-muted">
-                    {videoInfo.thumbnail ? (
-                      <img src={videoInfo.thumbnail} alt="thumbnail" className="object-cover w-full h-full" />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center">
-                        <PlayCircle className="w-8 h-8 text-muted-foreground" />
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex flex-col justify-center overflow-hidden">
-                    <h3 className="font-semibold text-lg truncate" title={videoInfo.title}>{videoInfo.title}</h3>
-                    <p className="text-sm text-muted-foreground">
-                      {Math.floor(videoInfo.duration / 60)}:{String(videoInfo.duration % 60).padStart(2, '0')}
-                    </p>
-                  </div>
-                </div>
-              )}
+                {videoInfo && !isLoadingInfo && (
+                  <motion.div
+                    key="preview"
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -12 }}
+                    className="w-full"
+                  >
+                    <VideoPreview info={videoInfo} />
+                  </motion.div>
+                )}
+              </AnimatePresence>
 
-              <div className="flex flex-col sm:flex-row gap-4 w-full">
+              {/* Format / Quality selectors */}
+              <div className="flex flex-col sm:flex-row gap-3 w-full">
+                {/* Format Toggle */}
                 <div className="flex-1 bg-background border border-border rounded-xl p-1 flex">
                   {(['mp4', 'mp3'] as const).map(f => (
                     <button
                       key={f}
                       onClick={() => setFormat(f)}
                       className={cn(
-                        "flex-1 py-3 px-4 rounded-lg font-medium transition-all text-sm uppercase tracking-wider",
-                        format === f 
-                          ? "bg-primary text-primary-foreground shadow-sm" 
-                          : "text-muted-foreground hover:bg-muted"
+                        "flex-1 py-3 px-4 rounded-lg font-semibold transition-all text-sm uppercase tracking-wider",
+                        format === f
+                          ? "bg-primary text-primary-foreground shadow-sm"
+                          : "text-muted-foreground hover:bg-muted hover:text-foreground"
                       )}
                     >
-                      {f}
+                      {f === 'mp4' ? '🎬 MP4' : '🎵 MP3'}
                     </button>
                   ))}
                 </div>
 
+                {/* Quality Selector */}
                 {format === 'mp4' && (
-                  <select
-                    value={quality}
-                    onChange={(e) => setQuality(e.target.value)}
-                    className="flex-1 bg-background border border-border rounded-xl px-4 py-3 font-medium focus:outline-none focus:ring-2 focus:ring-primary/50 text-foreground cursor-pointer appearance-none"
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="flex-1"
                   >
-                    <option value="1080p">1080p (FHD)</option>
-                    <option value="720p">720p (HD)</option>
-                    <option value="360p">360p (SD)</option>
-                    <option value="144p">144p (Basic)</option>
-                  </select>
+                    <select
+                      value={quality}
+                      onChange={(e) => setQuality(e.target.value as QualityOption)}
+                      className="w-full bg-background border border-border rounded-xl px-4 py-3 font-medium focus:outline-none focus:ring-2 focus:ring-primary/50 text-foreground cursor-pointer appearance-none"
+                    >
+                      <option value="1080p">1080p — Full HD</option>
+                      <option value="720p">720p — HD</option>
+                      <option value="360p">360p — SD</option>
+                      <option value="144p">144p — Low</option>
+                    </select>
+                  </motion.div>
                 )}
               </div>
 
-              <button
+              {/* Download Button */}
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
                 onClick={startDownload}
-                disabled={!url || isLoadingInfo || !!infoError}
-                className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-semibold text-lg py-4 rounded-xl shadow-lg shadow-primary/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none hover:scale-[1.02] active:scale-[0.98]"
+                disabled={!url || isLoadingInfo}
+                className="w-full bg-gradient-to-r from-primary to-blue-500 hover:from-primary/90 hover:to-blue-500/90 text-white font-bold text-base sm:text-lg py-4 rounded-xl shadow-lg shadow-primary/25 transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none flex items-center justify-center gap-2.5"
               >
+                <DownloadCloud className="w-5 h-5" />
                 Download Now
-              </button>
+              </motion.button>
             </div>
+          </motion.div>
+
+          {/* Feature badges */}
+          <div className="flex flex-wrap gap-2">
+            {['No signup', 'Private', 'HD quality', 'MP3 & MP4'].map(label => (
+              <span key={label} className="inline-flex items-center gap-1 text-xs font-medium bg-muted text-muted-foreground px-3 py-1.5 rounded-full">
+                <Sparkles className="w-3 h-3 text-primary" />
+                {label}
+              </span>
+            ))}
           </div>
         </div>
 
-        <div className="lg:col-span-5 space-y-6">
-          <div className="flex items-center gap-2 mb-4">
-            <Monitor className="w-5 h-5 text-muted-foreground" />
-            <h2 className="text-xl font-bold">Your Downloads</h2>
+        {/* ── Right Column: Downloads ─────────────────────────── */}
+        <div className="lg:col-span-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-bold flex items-center gap-2">
+              <Inbox className="w-5 h-5 text-muted-foreground" />
+              Downloads
+              {activeCount > 0 && (
+                <span className="text-xs bg-primary text-primary-foreground px-2 py-0.5 rounded-full font-bold">
+                  {activeCount}
+                </span>
+              )}
+            </h2>
+            {jobs.length > 0 && (
+              <button
+                onClick={() => setJobs([])}
+                className="text-xs text-muted-foreground hover:text-foreground transition-colors font-medium"
+              >
+                Clear all
+              </button>
+            )}
           </div>
 
-          <div className="space-y-4 max-h-[600px] overflow-y-auto pr-2 custom-scrollbar">
-            {jobs.length === 0 ? (
-              <div className="text-center py-12 px-4 border border-border border-dashed rounded-2xl bg-card/50">
-                <Settings2 className="w-12 h-12 text-muted-foreground/50 mx-auto mb-4" />
-                <p className="text-muted-foreground">No active downloads.</p>
-                <p className="text-sm text-muted-foreground/70">Paste a link to get started.</p>
-              </div>
-            ) : (
-              jobs.map(job => (
-                <div key={job.id} className="bg-card border border-border rounded-xl p-4 animate-in slide-in-from-right-8 relative group">
-                  <div className="flex justify-between items-start mb-2 gap-4">
-                    <h4 className="font-semibold text-sm line-clamp-2">{job.title}</h4>
-                    <span className="text-xs font-medium uppercase px-2 py-1 bg-muted rounded-md shrink-0">
-                      {job.format} • {job.format === 'mp4' ? job.quality : 'Audio'}
-                    </span>
-                  </div>
-
-                  {job.status === 'downloading' && (
-                    <div className="space-y-2 mt-4">
-                      <div className="flex justify-between text-xs text-muted-foreground font-medium">
-                        <span>{job.progress.toFixed(1)}%</span>
-                        <span>{job.speed} • ETA: {job.eta}</span>
-                      </div>
-                      <div className="h-2 w-full bg-muted rounded-full overflow-hidden">
-                        <div 
-                          className="h-full bg-primary transition-all duration-300"
-                          style={{ width: `${job.progress}%` }}
-                        />
-                      </div>
-                      <button 
-                        onClick={() => cancelJob(job.id)}
-                        className="text-xs text-destructive hover:underline mt-2 flex items-center gap-1"
-                      >
-                        <XCircle className="w-3 h-3" /> Cancel
-                      </button>
-                    </div>
-                  )}
-
-                  {job.status === 'completed' && (
-                    <div className="mt-4 flex items-center justify-between">
-                      <div className="flex items-center gap-2 text-green-500 text-sm font-medium">
-                        <CheckCircle className="w-4 h-4" />
-                        <span>Ready</span>
-                      </div>
-                      <div className="flex gap-2">
-                        <a 
-                          href={job.downloadUrl}
-                          download
-                          className="px-3 py-1.5 bg-primary text-primary-foreground text-sm font-medium rounded-lg hover:bg-primary/90 transition-colors"
-                        >
-                          Save File
-                        </a>
-                        <button onClick={() => removeJob(job.id)} className="p-1.5 text-muted-foreground hover:bg-muted rounded-lg">
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {job.status === 'error' && (
-                    <div className="mt-4 flex items-center justify-between">
-                      <div className="flex items-center gap-2 text-destructive text-sm font-medium">
-                        <AlertCircle className="w-4 h-4" />
-                        <span className="truncate max-w-[200px]" title={job.errorMessage}>Failed: {job.errorMessage}</span>
-                      </div>
-                      <button onClick={() => removeJob(job.id)} className="p-1.5 text-muted-foreground hover:bg-muted rounded-lg">
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  )}
-                  
-                  {job.status === 'cancelled' && (
-                    <div className="mt-4 flex items-center justify-between">
-                      <div className="text-muted-foreground text-sm font-medium">
-                        Cancelled
-                      </div>
-                      <button onClick={() => removeJob(job.id)} className="p-1.5 text-muted-foreground hover:bg-muted rounded-lg">
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  )}
-
-                  {job.status === 'pending' && (
-                    <div className="mt-4 flex items-center gap-2 text-muted-foreground text-sm">
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>Starting...</span>
-                    </div>
-                  )}
-                </div>
-              ))
-            )}
+          <div className="space-y-3 max-h-[65vh] overflow-y-auto pr-1 custom-scrollbar">
+            <AnimatePresence mode="popLayout">
+              {jobs.length === 0 ? (
+                <motion.div
+                  key="empty"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="text-center py-16 px-4 border border-dashed border-border rounded-2xl bg-card/30"
+                >
+                  <DownloadCloud className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />
+                  <p className="text-muted-foreground font-medium">No downloads yet</p>
+                  <p className="text-sm text-muted-foreground/60 mt-1">
+                    Paste a link to get started
+                  </p>
+                </motion.div>
+              ) : (
+                jobs.map(job => (
+                  <DownloadCard
+                    key={job.id}
+                    job={job}
+                    onCancel={cancelJob}
+                    onRemove={removeJob}
+                  />
+                ))
+              )}
+            </AnimatePresence>
           </div>
         </div>
       </main>
-      
-      <footer className="border-t border-border mt-auto py-6">
-        <div className="max-w-6xl mx-auto px-4 text-center text-sm text-muted-foreground flex flex-col md:flex-row items-center justify-between gap-4">
-          <p>© 2026 AnyDL. Built with FastAPI & React.</p>
-          <div className="flex gap-4">
-            <a href="#" className="hover:text-foreground transition-colors">Terms</a>
-            <a href="#" className="hover:text-foreground transition-colors">Privacy</a>
-            <a href="#" className="hover:text-foreground transition-colors">GitHub</a>
-          </div>
-        </div>
-      </footer>
+
+      <Footer />
     </div>
   );
 }

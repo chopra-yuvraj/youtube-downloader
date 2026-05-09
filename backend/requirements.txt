@@ -1,8 +1,8 @@
-fastapi
-uvicorn
+fastapi==0.115.*
+uvicorn[standard]==0.34.*
 yt-dlp
-pydantic
+pydantic==2.*
 websockets
 python-multipart
-cors
 aiofiles
+slowapi

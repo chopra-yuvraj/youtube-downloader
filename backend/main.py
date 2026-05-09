@@ -1,179 +1,233 @@
-import os
-import time
+"""
+AnyDL — FastAPI Backend Entry Point
+
+Architecture:
+  main.py      → App bootstrap, middleware, route registration
+  config.py    → Environment-based settings
+  downloader.py → yt-dlp orchestration service
+  validators.py → URL/filename validation & sanitization
+"""
 import asyncio
-import uuid
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+import logging
+import time
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-import yt_dlp
 from pydantic import BaseModel
-from typing import Dict, Any
 
-app = FastAPI()
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+from config import (
+    ALLOWED_ORIGINS, DOWNLOAD_DIR, FILE_TTL_SECONDS, CLEANUP_INTERVAL, RATE_LIMIT,
 )
+from validators import validate_youtube_url, sanitize_filename
+from downloader import fetch_video_info, start_download
 
-DOWNLOAD_DIR = os.path.join(os.path.dirname(__file__), "downloads")
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+# ── Logging ────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("anydl")
 
-async def cleanup_old_files():
+
+# ── Cleanup background task ───────────────────────────────────────
+async def _cleanup_loop():
+    """Periodically remove expired download files."""
     while True:
         try:
             now = time.time()
-            for filename in os.listdir(DOWNLOAD_DIR):
-                file_path = os.path.join(DOWNLOAD_DIR, filename)
-                if os.path.isfile(file_path):
-                    # Remove files older than 1 hour
-                    if os.stat(file_path).st_mtime < now - 3600:
-                        os.remove(file_path)
-        except Exception as e:
-            print(f"Cleanup error: {e}")
-        await asyncio.sleep(600)  # Check every 10 minutes
+            removed = 0
+            for path in DOWNLOAD_DIR.iterdir():
+                if path.is_file() and path.stat().st_mtime < now - FILE_TTL_SECONDS:
+                    path.unlink(missing_ok=True)
+                    removed += 1
+            if removed:
+                logger.info("Cleanup: removed %d expired file(s)", removed)
+        except Exception:
+            logger.exception("Cleanup sweep failed")
+        await asyncio.sleep(CLEANUP_INTERVAL)
 
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(cleanup_old_files())
 
-active_tasks: Dict[str, asyncio.Task] = {}
-active_downloads_info: Dict[str, dict] = {}
+# ── App lifespan (replaces deprecated on_event) ───────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(_cleanup_loop())
+    logger.info("AnyDL backend started — cleanup task scheduled")
+    yield
+    task.cancel()
+    logger.info("AnyDL backend shutting down")
 
+
+# ── FastAPI app ────────────────────────────────────────────────────
+app = FastAPI(
+    title="AnyDL API",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+# Rate limiter
+limiter = Limiter(key_func=get_remote_address, default_limits=[RATE_LIMIT])
+app.state.limiter = limiter
+app.add_middleware(SlowAPIMiddleware)
+
+@app.exception_handler(RateLimitExceeded)
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    raise HTTPException(status_code=429, detail="Too many requests. Please slow down.")
+
+# CORS — uses explicit origins instead of wildcard
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
+
+
+# ── Schemas ────────────────────────────────────────────────────────
 class InfoRequest(BaseModel):
     url: str
 
+
+# ── Routes ─────────────────────────────────────────────────────────
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint for monitoring and load balancers."""
+    return {"status": "ok"}
+
+
 @app.post("/api/info")
-async def get_video_info(request: InfoRequest):
-    ydl_opts = {
-        'quiet': True,
-        'skip_download': True,
-    }
+@limiter.limit(RATE_LIMIT)
+async def get_video_info(request: Request, body: InfoRequest):
+    """Fetch video metadata (title, thumbnail, duration)."""
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(request.url, download=False)
-            return {
-                "title": info.get("title", "Unknown"),
-                "thumbnail": info.get("thumbnail"),
-                "duration": info.get("duration", 0),
-                "formats": [
-                    {
-                        "format_id": f.get("format_id"),
-                        "ext": f.get("ext"),
-                        "resolution": f.get("resolution", "audio only"),
-                        "vcodec": f.get("vcodec"),
-                        "acodec": f.get("acodec")
-                    } for f in info.get("formats", [])
-                ]
-            }
-    except Exception as e:
+        url = validate_youtube_url(body.url)
+    except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    try:
+        info = await fetch_video_info(url)
+        return info
+    except Exception as e:
+        logger.warning("Info extraction failed for %s: %s", body.url, e)
+        raise HTTPException(status_code=400, detail="Could not fetch video info. Check the URL and try again.")
+
+
 @app.websocket("/api/ws/download")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_download(websocket: WebSocket):
+    """
+    WebSocket-based download endpoint.
+
+    Protocol:
+      1. Client connects
+      2. Client sends JSON: { url, format, quality }
+      3. Server streams JSON progress: { status, progress, speed, eta }
+      4. Server sends final: { status: "completed", download_url, title }
+      5. Connection closes
+
+    Cancellation: client closes the WebSocket → download aborts.
+    """
     await websocket.accept()
-    download_id = str(uuid.uuid4())
-    
+    download_task = None
+
     try:
         data = await websocket.receive_json()
-        url = data.get("url")
-        format_type = data.get("format", "mp4")
-        quality = data.get("quality", "1080p")
-        
-        ydl_opts = {
-            'outtmpl': os.path.join(DOWNLOAD_DIR, f'{download_id}.%(ext)s'),
-            'quiet': True,
-            'no_warnings': True,
-        }
-        
-        if format_type == "mp3":
-            ydl_opts['format'] = 'bestaudio/best'
-            ydl_opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
-        else:
-            if quality == "144p":
-                ydl_opts['format'] = 'bestvideo[height<=144]+bestaudio/best'
-            elif quality == "360p":
-                ydl_opts['format'] = 'bestvideo[height<=360]+bestaudio/best'
-            elif quality == "720p":
-                ydl_opts['format'] = 'bestvideo[height<=720]+bestaudio/best'
-            elif quality == "1080p":
-                ydl_opts['format'] = 'bestvideo[height<=1080]+bestaudio/best'
-            else:
-                ydl_opts['format'] = 'bestvideo+bestaudio/best'
-                
-            ydl_opts['merge_output_format'] = 'mp4'
 
-        def progress_hook(d):
-            if d['status'] == 'downloading':
-                progress_str = d.get('_percent_str', '0%').strip('\x1b[0;94m').strip('\x1b[0m').strip()
-                speed_str = d.get('_speed_str', '0KiB/s').strip('\x1b[0;32m').strip('\x1b[0m').strip()
-                eta_str = d.get('_eta_str', 'Unknown').strip('\x1b[0;33m').strip('\x1b[0m').strip()
-                
-                try:
-                    progress_val = float(progress_str.replace('%', ''))
-                except:
-                    progress_val = 0
-                
-                msg = {
-                    "status": "downloading",
-                    "progress": progress_val,
-                    "speed": speed_str,
-                    "eta": eta_str
-                }
-                asyncio.run_coroutine_threadsafe(websocket.send_json(msg), asyncio.get_event_loop())
-
-        ydl_opts['progress_hooks'] = [progress_hook]
-
-        def download_sync():
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                ext = 'mp3' if format_type == 'mp3' else 'mp4'
-                return f"{download_id}.{ext}", info.get("title", "video")
-
-        loop = asyncio.get_event_loop()
-        task = loop.run_in_executor(None, download_sync)
-        active_tasks[download_id] = task
-        
+        # Validate inputs
         try:
-            filename, title = await task
-            await websocket.send_json({
-                "status": "completed",
-                "download_url": f"/api/files/{filename}",
-                "title": title
-            })
-        except asyncio.CancelledError:
-            await websocket.send_json({"status": "cancelled"})
-        except Exception as e:
+            url = validate_youtube_url(data.get("url", ""))
+        except ValueError as e:
             await websocket.send_json({"status": "error", "message": str(e)})
-            
+            await websocket.close()
+            return
+
+        format_type = data.get("format", "mp4")
+        if format_type not in ("mp3", "mp4"):
+            format_type = "mp4"
+
+        quality = data.get("quality", "1080p")
+        if quality not in ("144p", "360p", "720p", "1080p"):
+            quality = "1080p"
+
+        # Progress callback — sends updates over the WebSocket
+        async def on_progress(msg: dict):
+            try:
+                await websocket.send_json(msg)
+            except Exception:
+                pass  # WebSocket may have closed
+
+        logger.info("Download started: %s (%s %s)", url, format_type, quality)
+
+        # Run the download
+        download_task = asyncio.ensure_future(
+            start_download(url, format_type, quality, on_progress)
+        )
+        filename, title = await download_task
+
+        await websocket.send_json({
+            "status": "completed",
+            "download_url": f"/api/files/{filename}",
+            "title": title,
+        })
+        logger.info("Download completed: %s → %s", title, filename)
+
+    except asyncio.CancelledError:
+        # Graceful cancellation — don't try to send on a closed socket
+        logger.info("Download cancelled by client")
     except WebSocketDisconnect:
-        if download_id in active_tasks:
-            active_tasks[download_id].cancel()
+        logger.info("Client disconnected — aborting download")
+        if download_task and not download_task.done():
+            download_task.cancel()
+    except Exception as e:
+        logger.exception("Download failed: %s", e)
+        try:
+            await websocket.send_json({"status": "error", "message": str(e)})
+        except Exception:
+            pass  # Socket already gone
     finally:
-        if download_id in active_tasks:
-            del active_tasks[download_id]
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
 
 @app.get("/api/files/{filename}")
-async def get_file(filename: str):
-    file_path = os.path.join(DOWNLOAD_DIR, filename)
-    if os.path.exists(file_path):
-        return FileResponse(path=file_path, filename=filename, media_type='application/octet-stream')
-    raise HTTPException(status_code=404, detail="File not found")
+async def serve_file(filename: str):
+    """
+    Serve a completed download file.
+    Sanitizes the filename to prevent path traversal attacks.
+    """
+    try:
+        safe_name = sanitize_filename(filename)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid filename")
 
-@app.post("/api/cancel/{download_id}")
-async def cancel_download(download_id: str):
-    if download_id in active_tasks:
-        active_tasks[download_id].cancel()
-        return {"status": "cancelled"}
-    return {"status": "not found"}
+    file_path = DOWNLOAD_DIR / safe_name
 
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found or expired")
+
+    # Double-check the resolved path is inside DOWNLOAD_DIR
+    if not file_path.resolve().is_relative_to(DOWNLOAD_DIR.resolve()):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    return FileResponse(
+        path=str(file_path),
+        filename=safe_name,
+        media_type="application/octet-stream",
+    )
+
+
+# ── Entry point ────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    from config import HOST, PORT
+
+    uvicorn.run("main:app", host=HOST, port=PORT, reload=True)
