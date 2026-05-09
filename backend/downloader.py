@@ -145,7 +145,12 @@ async def fetch_video_info(url: str) -> dict:
     Fetch video metadata without downloading.
     Runs in executor to avoid blocking the event loop.
     """
-    ydl_opts = {"quiet": True, "skip_download": True, "no_warnings": True}
+    ydl_opts = {
+        "quiet": True,
+        "skip_download": True,
+        "no_warnings": True,
+        "format": "b",  # simplest format to avoid extraction issues
+    }
     
     if COOKIE_FILE:
         ydl_opts["cookiefile"] = str(COOKIE_FILE)
@@ -174,9 +179,9 @@ async def start_download(
     """
     Start a download and return (filename, title) when done.
 
-    CRITICAL FIX: Capture the running loop *here* (in the coroutine context)
-    and pass it into the progress hook, instead of calling
-    `asyncio.get_event_loop()` from inside the worker thread.
+    Uses automatic format fallback: if the preferred format fails,
+    retries with the simplest possible format string ('b') which
+    always succeeds.
     """
     download_id = str(uuid.uuid4())
     loop = asyncio.get_running_loop()
@@ -185,10 +190,24 @@ async def start_download(
     opts = _build_ydl_opts(download_id, format_type, quality, hook)
 
     def _download() -> tuple[str, str]:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            ext = "mp3" if format_type == "mp3" else "mp4"
-            return f"{download_id}.{ext}", info.get("title", "video")
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                ext = "mp3" if format_type == "mp3" else "mp4"
+                return f"{download_id}.{ext}", info.get("title", "video")
+        except yt_dlp.utils.DownloadError as e:
+            if "Requested format" in str(e) or "format" in str(e).lower():
+                logger.warning("Format failed, retrying with fallback: %s", e)
+                # Fallback: use the absolute simplest format
+                fallback_opts = dict(opts)
+                fallback_opts["format"] = "b"
+                fallback_opts.pop("format_sort", None)
+                fallback_opts.pop("merge_output_format", None)
+                with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    ext = "mp3" if format_type == "mp3" else "mp4"
+                    return f"{download_id}.{ext}", info.get("title", "video")
+            raise
 
     filename, title = await loop.run_in_executor(_executor, _download)
 
