@@ -1,9 +1,13 @@
 FROM python:3.12-slim
 
-# Install FFmpeg
+# Install FFmpeg, curl, and unzip (needed for deno installer)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg && \
+    apt-get install -y --no-install-recommends ffmpeg curl unzip && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install Deno — required by yt-dlp for YouTube JS player extraction
+RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh
+ENV PATH="/usr/local/bin:${PATH}"
 
 WORKDIR /app
 
