@@ -104,7 +104,7 @@ class InfoRequest(BaseModel):
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint for monitoring and load balancers."""
-    return {"status": "ok"}
+    return {"status": "ok", "allowed_origins": ALLOWED_ORIGINS}
 
 
 @app.get("/api/debug")

@@ -12,9 +12,11 @@ PORT: int = int(os.getenv("PORT", "8000"))
 # ── CORS ───────────────────────────────────────────────────────────
 # Comma-separated origins — production frontend hardcoded, env var can extend
 _DEFAULT_ORIGINS = "https://somnath-ji.vercel.app,http://localhost:5173,http://localhost:4173"
-ALLOWED_ORIGINS: list[str] = os.getenv(
-    "ALLOWED_ORIGINS", _DEFAULT_ORIGINS
-).split(",")
+ALLOWED_ORIGINS: list[str] = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv("ALLOWED_ORIGINS", _DEFAULT_ORIGINS).split(",")
+    if origin.strip()
+]
 
 # ── Downloads ──────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent
