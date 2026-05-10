@@ -148,7 +148,7 @@ async def get_video_info(request: Request, body: InfoRequest):
         return info
     except Exception as e:
         logger.exception("Failed to fetch info for %s: %s", body.url, e)
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Error: {str(e)}")
 
 
 @app.websocket("/api/ws/download")
