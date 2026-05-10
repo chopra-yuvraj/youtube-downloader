@@ -55,7 +55,7 @@ export function useTheme() {
 /** ── YouTube URL regex ──────────────────────────────────────────
  *  Matches standard YouTube watch, shorts, and youtu.be links.
  */
-export const YOUTUBE_URL_RE = /^(https?:\/\/)?(www\.)?(youtube\.com\/(watch\?v=|shorts\/)|youtu\.be\/).+$/;
+export const YOUTUBE_URL_RE = /^((https?:)?\/\/)?(www\.)?(youtube\.com\/(watch\?v=|shorts\/)|youtu\.be\/).+$/;
 
 /** ── Backend URLs ───────────────────────────────────────────────
  *  Pulled from Vite env vars with production Render backend as default.
